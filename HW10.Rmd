@@ -1,0 +1,237 @@
+---
+title: "HW10"
+subtitle: "Chapters 11 and 12"
+author: "Your Name Here"
+output: pdf_document
+---
+
+The code below just loads some packages and makes it so that enough digits are printed that you won't get confused by rounding errors.
+
+```{r, message = FALSE}
+library(dplyr) # functions like summarize
+library(ggplot2) # for making plots
+library(gridExtra)
+library(GGally)
+library(readr)
+library(car)
+
+options("pillar.sigfig" = 10) # print 10 significant digits in summarize output
+```
+
+## Problem 1: Galapagos (Adapted from Sleuth3 12.20)
+
+Quote from book:
+
+> The data [read in below] come from a 1973 study. (Data from M. P. Johnson and P. H. Raven, "Species Number and Endemism: The Galapagos Archipelago Revisited," *Science* 179 (1973): 893-5.)  The number of species on an island is known to be related to the island's area.  Of interest is what other variables are also related to the number of species, after island area is accounted for.
+
+The data set includes the following variables:
+
+* Island: a character vector indicating the island
+* Total: total number of observed species
+* Native: number of native species
+* Area: area (km^2)
+* Elev: elevation (m)
+* DistNear: distance from nearest island (km)
+* DistSc: distance from Santa Cruz (km)
+* AreaNear: area of nearest island (km^2)
+
+In this analysis, our response variable is `Native`, the number of native species.  You will use `Area`, `Elev`, `DistNear`, `DistSc`, and `AreaNear` as possible explanatory variables.
+
+```{r}
+galapagos <- read_csv("http://www.evanlray.com/data/sleuth3/ex1220_galapagos.csv")
+head(galapagos)
+```
+
+### (a) Make a pairs plot of the data including only the variables you will use in your analysis (with the response variable last).
+
+```{r}
+ggpairs(galapagos %>% select(Area, Elev, DistNear, DistSc, AreaNear, Native))
+```
+
+
+### (b) Identify a set of transformations for all variables in the model so that the regression conditions appear to be fairly well satisfied.  In doing this, consider pairs plots of the transformed data and plots of residuals vs explanatory variables in a regression model including all transformed explanatory variables.  (You should have both of these types of plots.)  After this step, you should feel fairly confident that any models you fit will either have approximately linear relationships among transformed variables, or know how you will handle non-linearity by adding polynomial terms in the model.  You should also feel feel confident that the variance of residuals is fairly constant across values of explanatory variables.  Note that `DistSc` includes some 0 values.  A common trick in cases like this is to add 1 to the observed values of that variable before doing transformations (this means that things like a log transformation are an option).
+
+```{r}
+galapagos_transformed <- galapagos %>%
+  transmute(
+    log_Area = log(Area),
+    log_Elev = log(Elev),
+    log_DistNear = log(DistNear),
+    log_DistSc = log(DistSc + 1),
+    log_AreaNear = log(AreaNear),
+    Native_0.25 = Native^0.25
+  )
+
+ggpairs(galapagos_transformed)
+
+lm_full <- lm(Native_0.25 ~ log_Area + log_Elev + log_DistNear + log_DistSc + log_AreaNear,
+  data = galapagos_transformed)
+galapagos_transformed <- galapagos_transformed %>%
+  mutate(
+    resid = residuals(lm_full)
+  )
+
+p1 <- ggplot(data = galapagos_transformed, mapping = aes(x = log_Area, y = resid)) +
+  geom_point() +
+  geom_smooth()
+p2 <- ggplot(data = galapagos_transformed, mapping = aes(x = log_Elev, y = resid)) +
+  geom_point() +
+  geom_smooth()
+p3 <- ggplot(data = galapagos_transformed, mapping = aes(x = log_DistNear, y = resid)) +
+  geom_point() +
+  geom_smooth()
+p4 <- ggplot(data = galapagos_transformed, mapping = aes(x = log_DistSc, y = resid)) +
+  geom_point() +
+  geom_smooth()
+p5 <- ggplot(data = galapagos_transformed, mapping = aes(x = log_AreaNear, y = resid)) +
+  geom_point() +
+  geom_smooth()
+p6 <- ggplot(data = galapagos_transformed, mapping = aes(x = resid)) +
+  geom_density()
+grid.arrange(p1, p2, p3, p4, p5, p6)
+```
+
+### (c) Check for influential observations, outliers or high leverage observations.
+
+```{r}
+galapagos_transformed <- galapagos_transformed %>%
+  mutate(
+    obs_index = row_number(),
+    h = hatvalues(lm_full),
+    studres = rstudent(lm_full),
+    D = cooks.distance(lm_full)
+  )
+
+ggplot(data = galapagos_transformed, mapping = aes(x = obs_index, y = h)) +
+  geom_hline(yintercept = 2 * 6 / nrow(galapagos_transformed))+
+  geom_point()
+
+ggplot(data = galapagos_transformed, mapping = aes(x = obs_index, y = studres)) +
+  geom_point()
+
+ggplot(data = galapagos_transformed, mapping = aes(x = obs_index, y = D)) +
+  geom_point()
+
+galapagos_transformed <- galapagos_transformed %>%
+  mutate(suspicious = obs_index %in% c(5, 15))
+
+ggpairs(galapagos_transformed, mapping = aes(color = suspicious), columns = 1:6)
+```
+
+### (d) Use all subsets regression to identify a set of models with similar ability to model these data well, based on your transformed variables.  If necessary, perform this step both with and without the outliers or influential observations included.
+
+```{r}
+library(leaps)
+candidate_models <- regsubsets(Native_0.25 ~ log_Area + log_Elev + log_DistNear + log_DistSc + log_AreaNear,
+  data = galapagos_transformed)
+plot(candidate_models)
+summary(candidate_models)
+summary(candidate_models)$bic
+
+candidate_models2 <- regsubsets(Native_0.25 ~ log_Area + log_Elev + log_DistNear + log_DistSc + log_AreaNear,
+  data = galapagos_transformed %>% filter(!suspicious))
+plot(candidate_models2)
+summary(candidate_models2)
+summary(candidate_models2)$bic
+```
+
+When all observations are included, the following three models have roughly similar performance:
+
+Model 1: log Area, log DistNear, and log AreaNear as explanatory variables
+
+Model 2: log Area and log DistNear as explanatory variables
+
+Model 3: log Area as the only explanatory variable
+
+When one outlier and one high leverage observation are omitted, the following three models have roughly similar performance:
+
+Model 1: log Area, log DistSc, and log Elev as explanatory variables
+
+Model 2: log Area and log DistSc as explanatory variables
+
+Model 3: log Area as the only explanatory variable
+
+### (e) Obtain the model fits for all models you identified in part (d) as explaining the data about as well as each other, and print the model summaries.
+
+```{r}
+fit1 <- lm(Native_0.25 ~ log_Area + log_DistNear + log_AreaNear, data = galapagos_transformed)
+summary(fit1)
+```
+
+```{r}
+fit2 <- lm(Native_0.25 ~ log_Area + log_DistNear, data = galapagos_transformed)
+summary(fit2)
+```
+
+```{r}
+fit3 <- lm(Native_0.25 ~ log_Area, data = galapagos_transformed)
+summary(fit3)
+```
+
+```{r}
+fit1a <- lm(Native_0.25 ~ log_Area + log_DistSc + log_AreaNear, data = galapagos_transformed %>% filter(!suspicious))
+summary(fit1a)
+```
+
+```{r}
+fit2a <- lm(Native_0.25 ~ log_Area + log_DistSc, data = galapagos_transformed %>% filter(!suspicious))
+summary(fit2a)
+```
+
+```{r}
+fit3a <- lm(Native_0.25 ~ log_Area, data = galapagos_transformed %>% filter(!suspicious))
+summary(fit3a)
+```
+
+
+### (f) Summarize what your analysis has to say about the association of each of the explanatory variables in the data set with the response, after accounting for the explanatory variables in your models.  Indicate which of your findings are consistent across the various models considered and which depend on the details of your analysis.
+
+All of the models with low BIC showed very strong evidence of a positive association between an island's area and the number of native species found on the island, among islands similar to those in this study.  This result held whether or not one high leverage observation and one outlier were included.  If those two observations were removed, there was some weak evidence of a negative association between distance from Santa Cruz and the number of native species in the population of islands similar to those in this study, after accounting for the area of the island; this finding is not reliable since it depends on the removal of those two observations.  After accounting for the size of the island, there was not evidence of an association between any of the other explanatory variables and the number of native species on the island.
+
+### (g) In this part we'll think through what's going on in a model that includes only your transformed `Elev` variable and your transformed `Area` variable.
+
+#### i. Fit a model that has your (potentially transformed) `Native` as the response and your (potentially transformed) `Elev` and `Area` variables as explanatory variables.  Print the model summary and also use the `avPlots` function to create added variables plots for these variables.
+
+```{r}
+fit_both <- lm(Native_0.25 ~ log_Area + log_Elev, data = galapagos_transformed)
+summary(fit_both)
+avPlots(fit_both)
+```
+
+#### ii. Fit a model that has (potentially transformed) `Elev` as the response and (potentially transformed) `Area` as the only explanatory variable.  Add the residuals from this model to your data set with transformed variables.
+
+```{r}
+fit_elev <- lm(log_Elev ~ log_Area, data = galapagos_transformed)
+galapagos_transformed <- galapagos_transformed %>%
+  mutate(
+    resid_elev = residuals(fit_elev)
+  )
+```
+
+#### iii. Fit a model that has (potentially transformed) `Native` as the response and (potentially transformed) `Area` as the only explanatory variable.  Add the residuals from this model to your data set with transformed variables.
+
+```{r}
+fit_native <- lm(Native_0.25 ~ log_Area, data = galapagos_transformed)
+galapagos_transformed <- galapagos_transformed %>%
+  mutate(
+    resid_native = residuals(fit_native)
+  )
+```
+
+#### iv. Make a plot that has the residuals from part ii on the horizontal axis and the residuals from part iii on the vertical axis.  Compare this plot to the added variable plot for `Elev` from part i.
+
+```{r}
+ggplot(data = galapagos_transformed, mapping = aes(x = resid_elev, y = resid_native)) +
+  geom_point()
+```
+
+This plot matches the added variable plot above.
+
+#### v. Fit a linear model that has the residuals from part iii as the response and the residuals from part ii as the explanatory variable.  Print out the model summary.  Compare the coefficient estimate for the slope to the coefficient estimate for `Elev` from your model in part i.
+
+```{r}
+av_fit <- lm(resid_native ~ resid_elev, data = galapagos_transformed)
+summary(av_fit)
+```
+
+The coefficient estimate from this fit is the same as the coefficient estimate for elevation in the fit from part i.
